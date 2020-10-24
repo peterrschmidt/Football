@@ -8,10 +8,12 @@ def get_team_df(
     return team_df
 
 
-def add_features(
+def add_features_football(
     team_df):
     team_df = team_df.sort_values(by = ['date'])
     team_df['win'] = team_df['result'].map({'W': 1, 'D': 0, 'L': 0})
+    team_df['draw'] = team_df['result'].map({'W': 0, 'D': 1, 'L': 0})
+    team_df['loss'] = team_df['result'].map({'W': 0, 'D': 0, 'L': 1})
     team_df['nr_wins'] = \
         team_df.groupby(['team_name', 'season'])['win'].transform(lambda x: x.cumsum())
     team_df['game_nr'] = \
@@ -21,14 +23,27 @@ def add_features(
     team_df['goals_margin'] = team_df['goals'] - team_df['opp_goals']
     return team_df
 
+def add_features_nba(
+    team_df,
+    group_vars):
+    team_df['win'] = team_df['wl'].map({'W': 1, 'L': 0})
+    team_df['nr_wins'] = \
+        team_df.groupby(group_vars)['win'].transform(lambda x: x.cumsum())
+    team_df['game_nr'] = \
+        team_df.groupby(group_vars).cumcount() + 1
+    team_df['win_pct'] = \
+        team_df['nr_wins']/team_df['game_nr']
+    return team_df
+
 
 def add_lagged_features(
     team_df,
-    feat_lag_dict):
+    feat_lag_dict,
+    group_vars=['team_name', 'season']):
     for feat in feat_lag_dict.keys():
         for lag in feat_lag_dict[feat]:
             team_df[feat + '_lag_' + str(lag)] = \
-                team_df.groupby(['team_name', 'season'])[feat].transform(lambda x: x.shift(lag))
+                team_df.groupby(group_vars)[feat].transform(lambda x: x.shift(lag))
     return team_df
 
 
@@ -42,58 +57,49 @@ def get_match_df(team_df):
     match_vars = ["league", "season", "date"]
     for var in match_vars:
         match_df[var] = match_df[var + "_home"]
+ 
+    # Add numerical outcome variable
+    match_df['result_num'] = match_df['result_home'].map({'W': 2, 'D': 1, 'L': 0})
 
-    # These vars can be dropped
-    for drop_var in match_vars + ["matchid", "home", "homeoraway"]:
-        match_df.drop(drop_var + "_home", axis = 1, inplace = True)
-        match_df.drop(drop_var + "_away", axis = 1, inplace = True)
-        
     return match_df
 
 
-def add_bet_probs(
-    match_df,
-    odds_path = "C:/Users/peter/data/all-euro-data-2015-2016.xls",
-    merge_vars = ['league', 'season', 'team_name_home', 'team_name_away'],
-    odds_vars = ['B365H', 'B365D', 'B365A']
-):
+def get_match_df_nba(df):
+    joined = pd.merge(df, df, suffixes=['_home', '_away'],
+                      on=['season_id', 'game_id', 'game_date'])
+    result = joined[joined.team_id_home != joined.team_id_away]
+    result = result[result.matchup_home.str.contains(' vs. ')]
 
-    odds_data = pd.ExcelFile(odds_path)
-    odds_df = pd.DataFrame([])
-    for league in match_df.league.unique():
-        if league in league_dict.keys():
-            temp_df = odds_data.parse(sheet_name = league_dict[league])
+    return result
+
+
+def get_bet_probs(
+    avail_bet_data,
+    odds_vars = ['B365H', 'B365D', 'B365A'],
+    odds_path = "C:/Users/peter/data/betting_data",
+    ):
+
+    odds_df = pd.DataFrame()
+
+    for league in avail_bet_data.keys():
+        for season in avail_bet_data[league]:
+            temp_df = pd.read_csv(odds_path + "/" + league + '_' + season + '.csv')
             temp_df["league"] = league
-            temp_df["season"] = "15_16" #TODO: make flexible
+            temp_df["season"] = season
             temp_df["team_name_home"] = temp_df.HomeTeam.map(team_dict).fillna(temp_df['HomeTeam'])
             temp_df["team_name_away"] = temp_df.AwayTeam.map(team_dict).fillna(temp_df['AwayTeam'])
-        
-        odds_df = pd.concat([odds_df, temp_df], ignore_index = True)
+            
+            odds_df = odds_df.append(temp_df[['league', 'season', 'team_name_home', 'team_name_away'] + odds_vars])
     
+    odds_df.reset_index(inplace = True, drop = True)
+
     # Transform odds to probabilities
-    for var in odds_vars:
-        odds_df[var] = 1/odds_df[var]
+    odds_df[odds_vars] = 1 / odds_df[odds_vars]
 
-    match_df = match_df.merge(
-        odds_df[merge_vars + odds_vars],
-        how = 'left',
-        on = merge_vars
-    )
-
-    return match_df
+    return odds_df
 
 
-
-# Merge with odds data
-league_dict = {
-    "prem_league": "E0",
-    "bundesliga": "D1",
-    "serie_a": "I1",
-    # "laliga": "SP1",
-    # "ligue1": "F1",
-    # "superlig": "T1"
-}
-
+# Keys as in betting data, values as in scraped data
 team_dict = {
 'Man City': 'Manchester City', 
 'Man United': 'Manchester United',
@@ -117,5 +123,8 @@ team_dict = {
 'Greuther Furth': 'Greuther Fuerth',
 'Fortuna Dusseldorf': 'Fortuna Duesseldorf',
 'Braunschweig': 'Eintracht Braunschweig',
-'RB Leipzig': 'RasenBallsport Leipzig'
+'RB Leipzig': 'RasenBallsport Leipzig',
+'St Pauli': 'St. Pauli',
+'Spal': 'SPAL 2013',
+'Parma': 'Parma Calcio 1913'
 }
